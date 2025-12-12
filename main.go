@@ -29,6 +29,7 @@ type ShellParams struct {
 	Command        string `json:"command"`
 	WorkingDir     string `json:"working_dir,omitempty"`
 	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
+	Shell          string `json:"shell,omitempty"` // Optional: "sh", "bash", "zsh", "powershell", "cmd"
 }
 
 // Settings loaded from agent config
@@ -143,7 +144,7 @@ func (t *ShellExecutorTool) Call(ctx context.Context, args string) (string, erro
 	}
 
 	// Execute command
-	result, err := t.executeCommand(ctx, params.Command, workingDir, timeout)
+	result, err := t.executeCommand(ctx, params.Command, workingDir, timeout, params.Shell)
 	if err != nil {
 		return "", err
 	}
@@ -266,17 +267,33 @@ func (t *ShellExecutorTool) validateWorkingDir(dir string, allowedDirs []string)
 }
 
 // executeCommand runs the shell command with timeout
-func (t *ShellExecutorTool) executeCommand(ctx context.Context, command, workingDir string, timeoutSeconds int) (string, error) {
+func (t *ShellExecutorTool) executeCommand(ctx context.Context, command, workingDir string, timeoutSeconds int, shell string) (string, error) {
 	// Create context with timeout
 	execCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSeconds)*time.Second)
 	defer cancel()
 
-	// Create command (use cmd on Windows, sh on Unix)
+	// Create command based on shell selection
 	var cmd *exec.Cmd
-	if runtime.GOOS == "windows" {
+	switch shell {
+	case "powershell", "pwsh":
+		// PowerShell (works on Windows, macOS, Linux if installed)
+		cmd = exec.CommandContext(execCtx, "powershell", "-NoProfile", "-NonInteractive", "-Command", command)
+	case "cmd":
+		// Windows cmd.exe
 		cmd = exec.CommandContext(execCtx, "cmd", "/C", command)
-	} else {
+	case "bash":
+		cmd = exec.CommandContext(execCtx, "bash", "-c", command)
+	case "zsh":
+		cmd = exec.CommandContext(execCtx, "zsh", "-c", command)
+	case "sh":
 		cmd = exec.CommandContext(execCtx, "sh", "-c", command)
+	default:
+		// Auto-detect based on OS
+		if runtime.GOOS == "windows" {
+			cmd = exec.CommandContext(execCtx, "cmd", "/C", command)
+		} else {
+			cmd = exec.CommandContext(execCtx, "sh", "-c", command)
+		}
 	}
 	cmd.Dir = workingDir
 
