@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -270,8 +271,13 @@ func (t *ShellExecutorTool) executeCommand(ctx context.Context, command, working
 	execCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSeconds)*time.Second)
 	defer cancel()
 
-	// Create command
-	cmd := exec.CommandContext(execCtx, "sh", "-c", command)
+	// Create command (use cmd on Windows, sh on Unix)
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		cmd = exec.CommandContext(execCtx, "cmd", "/C", command)
+	} else {
+		cmd = exec.CommandContext(execCtx, "sh", "-c", command)
+	}
 	cmd.Dir = workingDir
 
 	// Capture output
