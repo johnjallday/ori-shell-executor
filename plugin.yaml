@@ -1,0 +1,74 @@
+name: ori_shell_executor
+version: 0.1.0
+description: Execute shell commands with safety controls. Supports allowlists, blocklists, working directory restrictions, and command timeouts.
+
+license: MIT
+repository: https://github.com/johnjallday/ori-shell-executor
+
+maintainers:
+  - name: Ori Agent Team
+    email: noreply@ori-agent.dev
+
+platforms:
+  - os: darwin
+    architectures: [amd64, arm64]
+  - os: linux
+    architectures: [amd64, arm64]
+
+requirements:
+  min_ori_version: "0.1.0"
+  api_version: "v1"
+  dependencies: []
+
+config:
+  variables:
+    - key: timeout_seconds
+      name: Command Timeout
+      description: Maximum time in seconds for command execution (1-300)
+      type: int
+      required: false
+      default_value: 60
+
+    - key: allowed_working_dirs
+      name: Allowed Directories
+      description: "Directories where commands can run (one per line). Commands will be rejected if working_dir is outside these paths."
+      type: string
+      required: false
+      default_value: "/Users/jjdev/Projects"
+      placeholder: "/path/to/project1\n/path/to/project2"
+
+    - key: allowed_patterns
+      name: Allowed Command Patterns
+      description: "Command patterns to allow (one per line). Use * as wildcard. Example: 'git *' allows all git commands."
+      type: string
+      required: false
+      default_value: "git *\ngo *\nmake *\nnpm *\nls *\ncat *\necho *\npwd\nwhich *\nenv"
+      placeholder: "git *\ngo *\nls *"
+
+    - key: blocked_patterns
+      name: Blocked Command Patterns
+      description: "Command patterns to block (one per line). These are checked BEFORE allowed patterns. Use for dangerous commands."
+      type: string
+      required: false
+      default_value: "rm -rf /*\nrm -rf ~/*\nsudo *\n> /dev/*\ncurl * | sh\ncurl * | bash\nchmod 777 *"
+      placeholder: "sudo *\nrm -rf *"
+
+tool_definition:
+  description: "Execute shell/bash commands with safety controls. Commands are validated against allowlist/blocklist patterns before execution. Use for running scripts, git commands, build tools, etc."
+  parameters:
+    - name: command
+      type: string
+      description: "The shell command to execute. Must match allowed patterns and not match blocked patterns."
+      required: true
+
+    - name: working_dir
+      type: string
+      description: "Working directory for command execution. Must be within allowed directories. Defaults to current agent's project root."
+      required: false
+
+    - name: timeout_seconds
+      type: integer
+      description: "Command timeout in seconds (1-300). Defaults to 60."
+      required: false
+      min: 1
+      max: 300
