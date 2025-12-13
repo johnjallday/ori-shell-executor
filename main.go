@@ -1,5 +1,7 @@
 package main
 
+//go:generate ../../ori-agent/bin/ori-plugin-gen -yaml=plugin.yaml -output=ori_shell_executor_generated.go
+
 import (
 	"bytes"
 	"context"
@@ -19,17 +21,10 @@ import (
 //go:embed plugin.yaml
 var configYAML string
 
-// ShellExecutorTool implements the PluginTool interface
-type ShellExecutorTool struct {
+// ori_shell_executorTool implements the PluginTool interface
+// Note: Compile-time interface check is in ori_shell_executor_generated.go
+type ori_shell_executorTool struct {
 	pluginapi.BasePlugin
-}
-
-// Params for shell execution
-type ShellParams struct {
-	Command        string `json:"command"`
-	WorkingDir     string `json:"working_dir,omitempty"`
-	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
-	Shell          string `json:"shell,omitempty"` // Optional: "sh", "bash", "zsh", "powershell", "cmd"
 }
 
 // Settings loaded from agent config
@@ -76,25 +71,11 @@ var defaultSettings = Settings{
 	},
 }
 
-// Definition returns the tool definition from plugin.yaml
-func (t *ShellExecutorTool) Definition() pluginapi.Tool {
-	tool, err := t.GetToolDefinition()
-	if err != nil {
-		return pluginapi.Tool{
-			Name:        "ori_shell_executor",
-			Description: "Execute shell commands (error loading definition)",
-		}
-	}
-	return tool
-}
+// Note: Definition() is inherited from BasePlugin, which automatically reads from plugin.yaml
+// Note: Call() is auto-generated in ori_shell_executor_generated.go from plugin.yaml
 
-// Call executes the shell command with safety checks
-func (t *ShellExecutorTool) Call(ctx context.Context, args string) (string, error) {
-	var params ShellParams
-	if err := json.Unmarshal([]byte(args), &params); err != nil {
-		return "", fmt.Errorf("failed to parse arguments: %w", err)
-	}
-
+// Execute contains the business logic - called by the generated Call() method
+func (t *ori_shell_executorTool) Execute(ctx context.Context, params *OriShellExecutorParams) (string, error) {
 	if params.Command == "" {
 		return "", fmt.Errorf("command is required")
 	}
@@ -169,7 +150,7 @@ func parseLines(s string) []string {
 }
 
 // loadSettings loads settings from agent config or uses defaults
-func (t *ShellExecutorTool) loadSettings() Settings {
+func (t *ori_shell_executorTool) loadSettings() Settings {
 	settings := defaultSettings
 
 	// Try to load from Settings API (requires agent context)
@@ -216,7 +197,7 @@ func (t *ShellExecutorTool) loadSettings() Settings {
 }
 
 // validateNotBlocked checks command against blocked patterns
-func (t *ShellExecutorTool) validateNotBlocked(command string, blockedPatterns []string) error {
+func (t *ori_shell_executorTool) validateNotBlocked(command string, blockedPatterns []string) error {
 	for _, pattern := range blockedPatterns {
 		if matchesPattern(command, pattern) {
 			return fmt.Errorf("command blocked by security policy: matches blocked pattern '%s'", pattern)
@@ -226,7 +207,7 @@ func (t *ShellExecutorTool) validateNotBlocked(command string, blockedPatterns [
 }
 
 // validateAllowed checks command against allowed patterns
-func (t *ShellExecutorTool) validateAllowed(command string, allowedPatterns []string) error {
+func (t *ori_shell_executorTool) validateAllowed(command string, allowedPatterns []string) error {
 	// If no patterns specified, allow all (after blocked check)
 	if len(allowedPatterns) == 0 {
 		return nil
@@ -242,7 +223,7 @@ func (t *ShellExecutorTool) validateAllowed(command string, allowedPatterns []st
 }
 
 // validateWorkingDir checks if working directory is allowed
-func (t *ShellExecutorTool) validateWorkingDir(dir string, allowedDirs []string) error {
+func (t *ori_shell_executorTool) validateWorkingDir(dir string, allowedDirs []string) error {
 	// If no restrictions, allow all
 	if len(allowedDirs) == 0 {
 		return nil
@@ -267,7 +248,7 @@ func (t *ShellExecutorTool) validateWorkingDir(dir string, allowedDirs []string)
 }
 
 // executeCommand runs the shell command with timeout
-func (t *ShellExecutorTool) executeCommand(ctx context.Context, command, workingDir string, timeoutSeconds int, shell string) (string, error) {
+func (t *ori_shell_executorTool) executeCommand(ctx context.Context, command, workingDir string, timeoutSeconds int, shell string) (string, error) {
 	// Create context with timeout
 	execCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSeconds)*time.Second)
 	defer cancel()
@@ -367,7 +348,7 @@ func matchesPattern(command, pattern string) bool {
 }
 
 // DefaultSettings returns the default configuration
-func (t *ShellExecutorTool) DefaultSettings() map[string]interface{} {
+func (t *ori_shell_executorTool) DefaultSettings() map[string]interface{} {
 	return map[string]interface{}{
 		"timeout_seconds":      60,
 		"allowed_working_dirs": defaultSettings.AllowedWorkingDirs,
@@ -377,22 +358,22 @@ func (t *ShellExecutorTool) DefaultSettings() map[string]interface{} {
 }
 
 // GetRequiredConfig returns configuration variables from plugin.yaml
-func (t *ShellExecutorTool) GetRequiredConfig() []pluginapi.ConfigVariable {
+func (t *ori_shell_executorTool) GetRequiredConfig() []pluginapi.ConfigVariable {
 	return t.BasePlugin.GetConfigFromYAML()
 }
 
 // ValidateConfig checks if the provided configuration is valid
-func (t *ShellExecutorTool) ValidateConfig(config map[string]interface{}) error {
+func (t *ori_shell_executorTool) ValidateConfig(config map[string]interface{}) error {
 	// Basic validation - configuration is optional
 	return nil
 }
 
 // InitializeWithConfig sets up the plugin with the provided configuration
-func (t *ShellExecutorTool) InitializeWithConfig(config map[string]interface{}) error {
+func (t *ori_shell_executorTool) InitializeWithConfig(config map[string]interface{}) error {
 	// Configuration is handled via Settings API, no additional initialization needed
 	return nil
 }
 
 func main() {
-	pluginapi.ServePlugin(&ShellExecutorTool{}, configYAML)
+	pluginapi.ServePlugin(&ori_shell_executorTool{}, configYAML)
 }
