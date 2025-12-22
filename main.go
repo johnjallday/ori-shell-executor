@@ -39,7 +39,7 @@ type Settings struct {
 var defaultSettings = Settings{
 	TimeoutSeconds: 60,
 	AllowedWorkingDirs: []string{
-		"/Users/jjdev/Projects",
+		"~/Projects",
 	},
 	AllowedPatterns: []string{
 		"./scripts/*",
@@ -222,6 +222,22 @@ func (t *ori_shell_executorTool) validateAllowed(command string, allowedPatterns
 	return fmt.Errorf("command not in allowed list. Allowed patterns: %v", allowedPatterns)
 }
 
+// expandTilde expands ~ to the user's home directory
+func expandTilde(path string) string {
+	if path == "~" {
+		if home, err := os.UserHomeDir(); err == nil {
+			return home
+		}
+		return path
+	}
+	if strings.HasPrefix(path, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, path[2:])
+		}
+	}
+	return path
+}
+
 // validateWorkingDir checks if working directory is allowed
 func (t *ori_shell_executorTool) validateWorkingDir(dir string, allowedDirs []string) error {
 	// If no restrictions, allow all
@@ -229,13 +245,15 @@ func (t *ori_shell_executorTool) validateWorkingDir(dir string, allowedDirs []st
 		return nil
 	}
 
-	absDir, err := filepath.Abs(dir)
+	// Expand ~ and get absolute path
+	absDir, err := filepath.Abs(expandTilde(dir))
 	if err != nil {
 		return fmt.Errorf("invalid working directory: %w", err)
 	}
 
 	for _, allowed := range allowedDirs {
-		absAllowed, err := filepath.Abs(allowed)
+		// Expand ~ in allowed directories too
+		absAllowed, err := filepath.Abs(expandTilde(allowed))
 		if err != nil {
 			continue
 		}
@@ -327,6 +345,14 @@ func matchesPattern(command, pattern string) bool {
 			prefix := strings.TrimSuffix(pattern, "*")
 			if strings.HasPrefix(command, prefix) {
 				return true
+			}
+			// For patterns like "ls *", also match just "ls" (without args)
+			// prefix is "ls ", so check if command == "ls" (prefix without trailing space)
+			if strings.HasSuffix(prefix, " ") {
+				baseCmd := strings.TrimSuffix(prefix, " ")
+				if command == baseCmd {
+					return true
+				}
 			}
 		}
 		if strings.HasPrefix(pattern, "*") {

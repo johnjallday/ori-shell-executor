@@ -1,6 +1,7 @@
 name: ori_shell_executor
 version: 0.1.0
 description: Execute shell commands with safety controls. Supports allowlists, blocklists, working directory restrictions, and command timeouts.
+tags: ["dev-tools", "system", "automation"]
 
 license: MIT
 repository: https://github.com/johnjallday/ori-shell-executor
@@ -36,8 +37,8 @@ config:
       description: "Directories where commands can run (one per line). Commands will be rejected if working_dir is outside these paths."
       type: string
       required: false
-      default_value: "/Users/jjdev/Projects"
-      placeholder: "/path/to/project1\n/path/to/project2"
+      default_value: "~/Projects"
+      placeholder: "~/Projects\n/path/to/project"
 
     - key: allowed_patterns
       name: Allowed Command Patterns
