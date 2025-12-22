@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -29,10 +30,11 @@ type ori_shell_executorTool struct {
 
 // Settings loaded from agent config
 type Settings struct {
-	TimeoutSeconds     int      `json:"timeout_seconds"`
-	AllowedWorkingDirs []string `json:"allowed_working_dirs"`
-	AllowedPatterns    []string `json:"allowed_patterns"`
-	BlockedPatterns    []string `json:"blocked_patterns"`
+	TimeoutSeconds           int      `json:"timeout_seconds"`
+	AllowedWorkingDirs       []string `json:"allowed_working_dirs"`
+	AllowedPatterns          []string `json:"allowed_patterns"`
+	BlockedPatterns          []string `json:"blocked_patterns"`
+	AllowShellMetacharacters bool     `json:"allow_shell_metacharacters"`
 }
 
 // Default settings
@@ -69,6 +71,7 @@ var defaultSettings = Settings{
 		"mkfs.*",
 		"eval *",
 	},
+	AllowShellMetacharacters: false,
 }
 
 // Note: Definition() is inherited from BasePlugin, which automatically reads from plugin.yaml
@@ -83,6 +86,11 @@ func (t *ori_shell_executorTool) Execute(ctx context.Context, params *OriShellEx
 	// Load settings
 	settings := t.loadSettings()
 
+	// Reject shell metacharacters unless explicitly allowed
+	if err := t.validateShellMetacharacters(params.Command, settings.AllowShellMetacharacters); err != nil {
+		return "", err
+	}
+
 	// Validate command against blocked patterns
 	if err := t.validateNotBlocked(params.Command, settings.BlockedPatterns); err != nil {
 		return "", err
@@ -96,13 +104,17 @@ func (t *ori_shell_executorTool) Execute(ctx context.Context, params *OriShellEx
 	// Determine working directory
 	workingDir := params.WorkingDir
 	if workingDir == "" {
-		agentCtx := t.GetAgentContext()
-		workingDir = agentCtx.AgentDir
-		if workingDir == "" {
-			var err error
-			workingDir, err = os.Getwd()
-			if err != nil {
-				return "", fmt.Errorf("failed to get working directory: %w", err)
+		if len(settings.AllowedWorkingDirs) > 0 && settings.AllowedWorkingDirs[0] != "" {
+			workingDir = expandTilde(settings.AllowedWorkingDirs[0])
+		} else {
+			agentCtx := t.GetAgentContext()
+			workingDir = agentCtx.AgentDir
+			if workingDir == "" {
+				var err error
+				workingDir, err = os.Getwd()
+				if err != nil {
+					return "", fmt.Errorf("failed to get working directory: %w", err)
+				}
 			}
 		}
 	}
@@ -149,6 +161,104 @@ func parseLines(s string) []string {
 	return result
 }
 
+func parseStringList(value interface{}) []string {
+	switch v := value.(type) {
+	case string:
+		return parseLines(v)
+	case []string:
+		return v
+	case []interface{}:
+		result := make([]string, 0, len(v))
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				s = strings.TrimSpace(s)
+				if s != "" {
+					result = append(result, s)
+				}
+			}
+		}
+		return result
+	default:
+		return nil
+	}
+}
+
+func parseBool(value interface{}) (bool, bool) {
+	switch v := value.(type) {
+	case bool:
+		return v, true
+	case string:
+		parsed, err := strconv.ParseBool(v)
+		if err == nil {
+			return parsed, true
+		}
+	case float64:
+		return v != 0, true
+	case int:
+		return v != 0, true
+	}
+	return false, false
+}
+
+func parseInt(value interface{}) (int, bool) {
+	switch v := value.(type) {
+	case float64:
+		return int(v), true
+	case int:
+		return v, true
+	case int64:
+		return int(v), true
+	case string:
+		parsed, err := strconv.Atoi(v)
+		if err == nil {
+			return parsed, true
+		}
+	}
+	return 0, false
+}
+
+func loadLegacySettings(path string) (Settings, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return Settings{}, false
+	}
+
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return Settings{}, false
+	}
+
+	settings := defaultSettings
+
+	if value, ok := raw["timeout_seconds"]; ok {
+		if parsed, ok := parseInt(value); ok && parsed > 0 {
+			settings.TimeoutSeconds = parsed
+		}
+	}
+	if value, ok := raw["allowed_working_dirs"]; ok {
+		if parsed := parseStringList(value); len(parsed) > 0 {
+			settings.AllowedWorkingDirs = parsed
+		}
+	}
+	if value, ok := raw["allowed_patterns"]; ok {
+		if parsed := parseStringList(value); len(parsed) > 0 {
+			settings.AllowedPatterns = parsed
+		}
+	}
+	if value, ok := raw["blocked_patterns"]; ok {
+		if parsed := parseStringList(value); len(parsed) > 0 {
+			settings.BlockedPatterns = parsed
+		}
+	}
+	if value, ok := raw["allow_shell_metacharacters"]; ok {
+		if parsed, ok := parseBool(value); ok {
+			settings.AllowShellMetacharacters = parsed
+		}
+	}
+
+	return settings, true
+}
+
 // loadSettings loads settings from agent config or uses defaults
 func (t *ori_shell_executorTool) loadSettings() Settings {
 	settings := defaultSettings
@@ -158,20 +268,51 @@ func (t *ori_shell_executorTool) loadSettings() Settings {
 	if agentCtx.AgentDir != "" {
 		sm := t.Settings()
 		if sm != nil {
-			if timeout, err := sm.GetInt("timeout_seconds"); err == nil && timeout > 0 {
-				settings.TimeoutSeconds = timeout
+			usedSetting := false
+			if raw, err := sm.Get("timeout_seconds"); err == nil && raw != nil {
+				if parsed, ok := parseInt(raw); ok && parsed > 0 {
+					settings.TimeoutSeconds = parsed
+				}
+				usedSetting = true
 			}
-			// Parse newline-separated pattern strings
-			if allowedDirs, err := sm.GetString("allowed_working_dirs"); err == nil && allowedDirs != "" {
-				settings.AllowedWorkingDirs = parseLines(allowedDirs)
+			if raw, err := sm.Get("allowed_working_dirs"); err == nil && raw != nil {
+				if parsed := parseStringList(raw); len(parsed) > 0 {
+					settings.AllowedWorkingDirs = parsed
+				}
+				usedSetting = true
 			}
-			if allowedPatterns, err := sm.GetString("allowed_patterns"); err == nil && allowedPatterns != "" {
-				settings.AllowedPatterns = parseLines(allowedPatterns)
+			if raw, err := sm.Get("allowed_patterns"); err == nil && raw != nil {
+				if parsed := parseStringList(raw); len(parsed) > 0 {
+					settings.AllowedPatterns = parsed
+				}
+				usedSetting = true
 			}
-			if blockedPatterns, err := sm.GetString("blocked_patterns"); err == nil && blockedPatterns != "" {
-				settings.BlockedPatterns = parseLines(blockedPatterns)
+			if raw, err := sm.Get("blocked_patterns"); err == nil && raw != nil {
+				if parsed := parseStringList(raw); len(parsed) > 0 {
+					settings.BlockedPatterns = parsed
+				}
+				usedSetting = true
 			}
-			return settings
+			if raw, err := sm.Get("allow_shell_metacharacters"); err == nil && raw != nil {
+				if parsed, ok := parseBool(raw); ok {
+					settings.AllowShellMetacharacters = parsed
+				}
+				usedSetting = true
+			}
+			if usedSetting {
+				return settings
+			}
+		}
+
+		pluginName := "ori_shell_executor"
+		legacyPaths := []string{
+			filepath.Join(agentCtx.AgentDir, fmt.Sprintf("%s_settings.json", pluginName)),
+			filepath.Join(agentCtx.AgentDir, fmt.Sprintf("%s_settings.json", strings.ReplaceAll(pluginName, "_", "-"))),
+		}
+		for _, path := range legacyPaths {
+			if legacySettings, ok := loadLegacySettings(path); ok {
+				return legacySettings
+			}
 		}
 	}
 
@@ -203,6 +344,19 @@ func (t *ori_shell_executorTool) validateNotBlocked(command string, blockedPatte
 			return fmt.Errorf("command blocked by security policy: matches blocked pattern '%s'", pattern)
 		}
 	}
+	return nil
+}
+
+// validateShellMetacharacters blocks common shell operators unless explicitly allowed.
+func (t *ori_shell_executorTool) validateShellMetacharacters(command string, allow bool) error {
+	if allow {
+		return nil
+	}
+
+	if containsShellMetacharacters(command) {
+		return fmt.Errorf("command contains shell metacharacters; set allow_shell_metacharacters to true to override")
+	}
+
 	return nil
 }
 
@@ -246,18 +400,28 @@ func (t *ori_shell_executorTool) validateWorkingDir(dir string, allowedDirs []st
 	}
 
 	// Expand ~ and get absolute path
-	absDir, err := filepath.Abs(expandTilde(dir))
+	expandedDir := expandTilde(dir)
+	absDir, err := filepath.Abs(expandedDir)
 	if err != nil {
 		return fmt.Errorf("invalid working directory: %w", err)
+	}
+	realDir, err := filepath.EvalSymlinks(absDir)
+	if err != nil {
+		realDir = absDir
 	}
 
 	for _, allowed := range allowedDirs {
 		// Expand ~ in allowed directories too
-		absAllowed, err := filepath.Abs(expandTilde(allowed))
+		expandedAllowed := expandTilde(allowed)
+		absAllowed, err := filepath.Abs(expandedAllowed)
 		if err != nil {
 			continue
 		}
-		if strings.HasPrefix(absDir, absAllowed) {
+		realAllowed, err := filepath.EvalSymlinks(absAllowed)
+		if err != nil {
+			realAllowed = absAllowed
+		}
+		if isSubdir(realDir, realAllowed) {
 			return nil
 		}
 	}
@@ -373,13 +537,51 @@ func matchesPattern(command, pattern string) bool {
 	return false
 }
 
+// containsShellMetacharacters checks for common shell operators to prevent command chaining.
+func containsShellMetacharacters(command string) bool {
+	if strings.Contains(command, "\n") {
+		return true
+	}
+
+	operators := []string{
+		"&&",
+		"||",
+		"|",
+		";",
+		"&",
+		">",
+		"<",
+		"`",
+		"$(",
+	}
+	for _, op := range operators {
+		if strings.Contains(command, op) {
+			return true
+		}
+	}
+	return false
+}
+
+// isSubdir returns true if dir is the same as base or within base.
+func isSubdir(dir, base string) bool {
+	rel, err := filepath.Rel(base, dir)
+	if err != nil {
+		return false
+	}
+	if rel == "." {
+		return true
+	}
+	return !strings.HasPrefix(rel, ".."+string(os.PathSeparator)) && rel != ".."
+}
+
 // DefaultSettings returns the default configuration
 func (t *ori_shell_executorTool) DefaultSettings() map[string]interface{} {
 	return map[string]interface{}{
-		"timeout_seconds":      60,
-		"allowed_working_dirs": defaultSettings.AllowedWorkingDirs,
-		"allowed_patterns":     defaultSettings.AllowedPatterns,
-		"blocked_patterns":     defaultSettings.BlockedPatterns,
+		"timeout_seconds":           60,
+		"allowed_working_dirs":      defaultSettings.AllowedWorkingDirs,
+		"allowed_patterns":          defaultSettings.AllowedPatterns,
+		"blocked_patterns":          defaultSettings.BlockedPatterns,
+		"allow_shell_metacharacters": defaultSettings.AllowShellMetacharacters,
 	}
 }
 
