@@ -1,6 +1,6 @@
-name: ori_shell_executor
-version: 0.0.4
-description: Execute shell commands with safety controls. Supports allowlists, blocklists, working directory restrictions, and command timeouts.
+name: ori-shell-executor
+version: 0.0.5
+description: Execute shell commands with safety controls. Supports command allowlists, blocklists, and timeouts.
 tags: ["dev-tools", "system", "automation"]
 
 license: MIT
@@ -32,13 +32,13 @@ config:
       required: false
       default_value: 60
 
-    - key: allowed_working_dirs
-      name: Allowed Directories
-      description: "Directories where commands can run (one per line). Commands will be rejected if working_dir is outside these paths."
+    - key: default_working_dir
+      name: Default Working Directory
+      description: "Default working directory when none is provided in a tool call."
       type: string
       required: false
-      default_value: "~/Projects"
-      placeholder: "~/Projects\n/path/to/project"
+      default_value: ""
+      placeholder: "/path/to/project"
 
     - key: allowed_patterns
       name: Allowed Command Patterns
@@ -73,7 +73,7 @@ tool_definition:
 
     - name: working_dir
       type: string
-      description: "Working directory for command execution. Must be within allowed directories. Defaults to current agent's project root."
+      description: "Working directory for command execution. Defaults to configured default_working_dir or agent context."
       required: false
 
     - name: timeout_seconds

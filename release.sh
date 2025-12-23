@@ -179,18 +179,22 @@ run_tests() {
     log_info "Running tests..."
 
     if [ "$DRY_RUN" = true ]; then
-        echo -e "${YELLOW}[DRY RUN]${NC} go test -v ./..."
+        echo -e "${YELLOW}[DRY RUN]${NC} GOWORK=off go test -v ./..."
     else
-        if go test -v ./... 2>&1; then
+        # Use GOWORK=off to avoid go.work conflicts
+        local test_output
+        test_output=$(GOWORK=off go test -v ./... 2>&1)
+        local test_exit_code=$?
+
+        # Check if there are no test files (not an error)
+        if echo "$test_output" | grep -q "\[no test files\]"; then
+            log_warning "No test files found (this is okay)"
+        elif [ $test_exit_code -eq 0 ]; then
             log_success "Tests passed"
         else
-            # Check if there are no test files (not an error)
-            if go test ./... 2>&1 | grep -q "no test files"; then
-                log_warning "No test files found (this is okay)"
-            else
-                log_error "Tests failed"
-                exit 1
-            fi
+            echo "$test_output"
+            log_error "Tests failed"
+            exit 1
         fi
     fi
 }
@@ -202,11 +206,15 @@ generate_code() {
     if [ ! -f "$ORI_AGENT_DIR/bin/ori-plugin-gen" ]; then
         log_warning "ori-plugin-gen not found, building it first..."
         if [ "$DRY_RUN" = false ]; then
-            (cd "$ORI_AGENT_DIR" && go build -o bin/ori-plugin-gen ./cmd/ori-plugin-gen)
+            (cd "$ORI_AGENT_DIR" && GOWORK=off go build -o bin/ori-plugin-gen ./cmd/ori-plugin-gen)
         fi
     fi
 
-    run_cmd go generate ./...
+    if [ "$DRY_RUN" = true ]; then
+        echo -e "${YELLOW}[DRY RUN]${NC} GOWORK=off go generate ./..."
+    else
+        GOWORK=off go generate ./...
+    fi
     log_success "Code generation complete"
 }
 
@@ -235,9 +243,9 @@ build_all_platforms() {
         log_info "  Building ${os}/${arch}..."
 
         if [ "$DRY_RUN" = true ]; then
-            echo -e "${YELLOW}[DRY RUN]${NC} GOOS=$os GOARCH=$arch go build -ldflags=\"-s -w\" -o $output ."
+            echo -e "${YELLOW}[DRY RUN]${NC} GOWORK=off GOOS=$os GOARCH=$arch go build -ldflags=\"-s -w\" -o $output ."
         else
-            GOOS="$os" GOARCH="$arch" go build -ldflags="-s -w" -o "$output" .
+            GOWORK=off GOOS="$os" GOARCH="$arch" go build -ldflags="-s -w" -o "$output" .
             log_success "  Built: $output"
         fi
     done

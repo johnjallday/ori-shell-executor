@@ -31,7 +31,7 @@ type ori_shell_executorTool struct {
 // Settings loaded from agent config
 type Settings struct {
 	TimeoutSeconds           int      `json:"timeout_seconds"`
-	AllowedWorkingDirs       []string `json:"allowed_working_dirs"`
+	DefaultWorkingDir        string   `json:"default_working_dir"`
 	AllowedPatterns          []string `json:"allowed_patterns"`
 	BlockedPatterns          []string `json:"blocked_patterns"`
 	AllowShellMetacharacters bool     `json:"allow_shell_metacharacters"`
@@ -39,10 +39,8 @@ type Settings struct {
 
 // Default settings
 var defaultSettings = Settings{
-	TimeoutSeconds: 60,
-	AllowedWorkingDirs: []string{
-		"~/Projects",
-	},
+	TimeoutSeconds:    60,
+	DefaultWorkingDir: "",
 	AllowedPatterns: []string{
 		"./scripts/*",
 		"git *",
@@ -101,11 +99,11 @@ func (t *ori_shell_executorTool) Execute(ctx context.Context, params *OriShellEx
 		return "", err
 	}
 
-	// Determine working directory
+	// Determine working directory: params > settings > agent context > cwd
 	workingDir := params.WorkingDir
 	if workingDir == "" {
-		if len(settings.AllowedWorkingDirs) > 0 && settings.AllowedWorkingDirs[0] != "" {
-			workingDir = expandTilde(settings.AllowedWorkingDirs[0])
+		if settings.DefaultWorkingDir != "" {
+			workingDir = expandTilde(settings.DefaultWorkingDir)
 		} else {
 			agentCtx := t.GetAgentContext()
 			workingDir = agentCtx.AgentDir
@@ -117,11 +115,6 @@ func (t *ori_shell_executorTool) Execute(ctx context.Context, params *OriShellEx
 				}
 			}
 		}
-	}
-
-	// Validate working directory
-	if err := t.validateWorkingDir(workingDir, settings.AllowedWorkingDirs); err != nil {
-		return "", err
 	}
 
 	// Determine timeout
@@ -235,9 +228,9 @@ func loadLegacySettings(path string) (Settings, bool) {
 			settings.TimeoutSeconds = parsed
 		}
 	}
-	if value, ok := raw["allowed_working_dirs"]; ok {
+	if value, ok := raw["default_working_dir"]; ok {
 		if parsed := parseStringList(value); len(parsed) > 0 {
-			settings.AllowedWorkingDirs = parsed
+			settings.DefaultWorkingDir = parsed[0]
 		}
 	}
 	if value, ok := raw["allowed_patterns"]; ok {
@@ -259,78 +252,29 @@ func loadLegacySettings(path string) (Settings, bool) {
 	return settings, true
 }
 
-// loadSettings loads settings from agent config or uses defaults
+// loadSettings loads settings from agent config or uses defaults.
+// Always reads fresh from disk to pick up configuration changes without server restart.
 func (t *ori_shell_executorTool) loadSettings() Settings {
 	settings := defaultSettings
 
-	// Try to load from Settings API (requires agent context)
+	// Build list of paths to try
+	var settingsPaths []string
+
 	agentCtx := t.GetAgentContext()
 	if agentCtx.AgentDir != "" {
-		sm := t.Settings()
-		if sm != nil {
-			usedSetting := false
-			if raw, err := sm.Get("timeout_seconds"); err == nil && raw != nil {
-				if parsed, ok := parseInt(raw); ok && parsed > 0 {
-					settings.TimeoutSeconds = parsed
-				}
-				usedSetting = true
-			}
-			if raw, err := sm.Get("allowed_working_dirs"); err == nil && raw != nil {
-				if parsed := parseStringList(raw); len(parsed) > 0 {
-					settings.AllowedWorkingDirs = parsed
-				}
-				usedSetting = true
-			}
-			if raw, err := sm.Get("allowed_patterns"); err == nil && raw != nil {
-				if parsed := parseStringList(raw); len(parsed) > 0 {
-					settings.AllowedPatterns = parsed
-				}
-				usedSetting = true
-			}
-			if raw, err := sm.Get("blocked_patterns"); err == nil && raw != nil {
-				if parsed := parseStringList(raw); len(parsed) > 0 {
-					settings.BlockedPatterns = parsed
-				}
-				usedSetting = true
-			}
-			if raw, err := sm.Get("allow_shell_metacharacters"); err == nil && raw != nil {
-				if parsed, ok := parseBool(raw); ok {
-					settings.AllowShellMetacharacters = parsed
-				}
-				usedSetting = true
-			}
-			if usedSetting {
-				return settings
-			}
-		}
-
-		pluginName := "ori_shell_executor"
-		legacyPaths := []string{
-			filepath.Join(agentCtx.AgentDir, fmt.Sprintf("%s_settings.json", pluginName)),
-			filepath.Join(agentCtx.AgentDir, fmt.Sprintf("%s_settings.json", strings.ReplaceAll(pluginName, "_", "-"))),
-		}
-		for _, path := range legacyPaths {
-			if legacySettings, ok := loadLegacySettings(path); ok {
-				return legacySettings
-			}
-		}
+		settingsPaths = append(settingsPaths, filepath.Join(agentCtx.AgentDir, "ori-shell-executor_settings.json"))
 	}
 
-	// Fallback: try to load settings directly from agent directory
-	// This works even when agent context isn't properly passed via RPC
-	settingsPaths := []string{
-		// Standard location for plugin-test-agent
-		"agents/plugin-test-agent/plugins/ori_shell_executor/settings.json",
-		// Legacy location
-		"agents/plugin-test-agent/ori_shell_executor_settings.json",
-	}
+	// Fallback paths if AgentDir is empty or file not found
+	settingsPaths = append(settingsPaths,
+		"agents/default/ori-shell-executor_settings.json",
+		"agents/plugin-test-agent/ori-shell-executor_settings.json",
+	)
 
+	// Try each path, reading fresh from disk
 	for _, path := range settingsPaths {
-		if data, err := os.ReadFile(path); err == nil {
-			var fileSettings Settings
-			if err := json.Unmarshal(data, &fileSettings); err == nil {
-				return fileSettings
-			}
+		if loadedSettings, ok := loadLegacySettings(path); ok {
+			return loadedSettings
 		}
 	}
 
@@ -390,43 +334,6 @@ func expandTilde(path string) string {
 		}
 	}
 	return path
-}
-
-// validateWorkingDir checks if working directory is allowed
-func (t *ori_shell_executorTool) validateWorkingDir(dir string, allowedDirs []string) error {
-	// If no restrictions, allow all
-	if len(allowedDirs) == 0 {
-		return nil
-	}
-
-	// Expand ~ and get absolute path
-	expandedDir := expandTilde(dir)
-	absDir, err := filepath.Abs(expandedDir)
-	if err != nil {
-		return fmt.Errorf("invalid working directory: %w", err)
-	}
-	realDir, err := filepath.EvalSymlinks(absDir)
-	if err != nil {
-		realDir = absDir
-	}
-
-	for _, allowed := range allowedDirs {
-		// Expand ~ in allowed directories too
-		expandedAllowed := expandTilde(allowed)
-		absAllowed, err := filepath.Abs(expandedAllowed)
-		if err != nil {
-			continue
-		}
-		realAllowed, err := filepath.EvalSymlinks(absAllowed)
-		if err != nil {
-			realAllowed = absAllowed
-		}
-		if isSubdir(realDir, realAllowed) {
-			return nil
-		}
-	}
-
-	return fmt.Errorf("working directory '%s' not in allowed directories: %v", dir, allowedDirs)
 }
 
 // executeCommand runs the shell command with timeout
@@ -562,25 +469,13 @@ func containsShellMetacharacters(command string) bool {
 	return false
 }
 
-// isSubdir returns true if dir is the same as base or within base.
-func isSubdir(dir, base string) bool {
-	rel, err := filepath.Rel(base, dir)
-	if err != nil {
-		return false
-	}
-	if rel == "." {
-		return true
-	}
-	return !strings.HasPrefix(rel, ".."+string(os.PathSeparator)) && rel != ".."
-}
-
 // DefaultSettings returns the default configuration
 func (t *ori_shell_executorTool) DefaultSettings() map[string]interface{} {
 	return map[string]interface{}{
-		"timeout_seconds":           60,
-		"allowed_working_dirs":      defaultSettings.AllowedWorkingDirs,
-		"allowed_patterns":          defaultSettings.AllowedPatterns,
-		"blocked_patterns":          defaultSettings.BlockedPatterns,
+		"timeout_seconds":            60,
+		"default_working_dir":        defaultSettings.DefaultWorkingDir,
+		"allowed_patterns":           defaultSettings.AllowedPatterns,
+		"blocked_patterns":           defaultSettings.BlockedPatterns,
 		"allow_shell_metacharacters": defaultSettings.AllowShellMetacharacters,
 	}
 }
