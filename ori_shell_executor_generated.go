@@ -24,7 +24,7 @@ var (
 // OriShellExecutorParams represents the parameters for this plugin
 type OriShellExecutorParams struct {
 	Command        string `json:"command"`         // The shell command to execute. Must match allowed patterns and not match blocked patterns.
-	WorkingDir     string `json:"working_dir"`     // Working directory for command execution. Must be within allowed directories. Defaults to current agent's project root.
+	WorkingDir     string `json:"working_dir"`     // Working directory for command execution. Defaults to configured default_working_dir or agent context.
 	TimeoutSeconds int    `json:"timeout_seconds"` // Command timeout in seconds (1-300). Defaults to 60.
 	Shell          string `json:"shell"`           // Shell to use: sh, bash, zsh, powershell, cmd. Defaults to sh on Unix, cmd on Windows.
 }
